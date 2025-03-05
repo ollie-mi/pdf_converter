@@ -80,3 +80,28 @@ def pdf_to_jpg(pdf_path, output_folder):
 # output_folder = 'output_images'  # Folder to save JPG files
 #
 # pdf_to_jpg(pdf_path, output_folder)
+
+def swap_pages(pdf_path, output_path, swaps):
+    reader = PyPDF2.PdfReader(pdf_path)
+    writer = PyPDF2.PdfWriter()
+
+    num_pages = len(reader.pages)
+    pages = list(reader.pages)
+
+    for i, j in swaps:
+        if i < num_pages and j < num_pages:
+            pages[i], pages[j] = pages[j], pages[i]
+
+    for page in pages:
+        writer.add_page(page)
+
+    with open(output_path, "wb") as output_pdf:
+        writer.write(output_pdf)
+
+
+# Example usage:
+# pdf_file = "input.pdf" # Path to the input PDF file
+# output_file = "output.pdf"  # Path to the output PDF
+# swap_pairs = [(6, 12), (7, 13)]
+#
+# swap_pages(pdf_file, output_file, swap_pairs)
