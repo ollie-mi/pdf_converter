@@ -1,6 +1,11 @@
 import os
+from io import BytesIO
+
 import PyPDF2
+from PyPDF2.filters import _xobj_to_image
+from PyPDF2.generic import NameObject, NumberObject
 from pdf2image import convert_from_path
+from PIL import Image
 
 
 def delete_last_two_pages(input_pdf, output_pdf):
@@ -105,3 +110,90 @@ def swap_pages(pdf_path, output_path, swaps):
 # swap_pairs = [(6, 12), (7, 13)]
 #
 # swap_pages(pdf_file, output_file, swap_pairs)
+
+
+def _recompress_page_images(page, quality):
+    """Re-encode every image XObject on a page as JPEG at the given quality.
+
+    PyPDF2 3.0.1 has no high-level image replacement API, so the image
+    streams are rewritten in place. Returns the number of images touched.
+    """
+    resources = page.get("/Resources")
+    if resources is None:
+        return 0
+
+    x_objects = resources.get_object().get("/XObject")
+    if x_objects is None:
+        return 0
+    x_objects = x_objects.get_object()
+
+    recompressed = 0
+    for name in list(x_objects.keys()):
+        x_object = x_objects[name].get_object()
+        if x_object.get("/Subtype") != "/Image":
+            continue
+        try:
+            _extension, raw = _xobj_to_image(x_object)
+            image = Image.open(BytesIO(raw))
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
+
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=quality, optimize=True)
+
+            x_object._data = buffer.getvalue()
+            x_object[NameObject("/Filter")] = NameObject("/DCTDecode")
+            x_object[NameObject("/ColorSpace")] = NameObject(
+                "/DeviceRGB" if image.mode == "RGB" else "/DeviceGray"
+            )
+            x_object[NameObject("/BitsPerComponent")] = NumberObject(8)
+            x_object[NameObject("/Width")] = NumberObject(image.width)
+            x_object[NameObject("/Height")] = NumberObject(image.height)
+            for key in ("/DecodeParms", "/SMask", "/Decode"):
+                if key in x_object:
+                    del x_object[key]
+            recompressed += 1
+        except Exception:
+            # Skip images that cannot be decoded or re-encoded (e.g.
+            # unsupported color spaces) and leave them untouched.
+            continue
+    return recompressed
+
+
+def compress_pdf(input_pdf, output_pdf, image_quality=60):
+    """Compress a PDF by re-encoding its embedded images as JPEG.
+
+    Image re-encoding is the main source of size reduction for scanned or
+    image-heavy PDFs. Content-stream packing (``compress_content_streams``)
+    is intentionally not used: in PyPDF2 3.0.1 it can produce streams that
+    some viewers fail to open, while giving almost no size benefit on PDFs
+    whose streams are already compressed.
+
+    Args:
+        input_pdf: Path to the source PDF file.
+        output_pdf: Path where the compressed PDF is written.
+        image_quality: JPEG quality (1-95) used to re-encode embedded images.
+            Lower values give smaller files at the cost of image quality.
+    """
+    with open(input_pdf, 'rb') as infile:
+        reader = PyPDF2.PdfReader(infile)
+        writer = PyPDF2.PdfWriter()
+
+        for page in reader.pages:
+            writer.add_page(page)
+
+        for page in writer.pages:
+            _recompress_page_images(page, image_quality)
+
+        with open(output_pdf, 'wb') as outfile:
+            writer.write(outfile)
+
+
+# Example usage:
+input_pdf = 'Contrato_de_arrendamento.pdf'  # Path to the input PDF file
+output_pdf = 'compressed.pdf'  # Path to the compressed output PDF
+
+compress_pdf(input_pdf, output_pdf, image_quality=60)
+original = os.path.getsize(input_pdf)
+compressed = os.path.getsize(output_pdf)
+print(f"Size reduced from {original} to {compressed} bytes")
